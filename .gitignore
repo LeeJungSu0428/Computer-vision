@@ -1,0 +1,35 @@
+# Course-provided material (never commit)
+baseline.ipynb
+common/
+robot/
+robot_world/
+package/
+dataset/
+dataset.zip
+DATASET_GUIDE.txt
+README.txt
+submission.example.json
+weights/baseline.pth
+weights/dinov2_vits14_pretrain.pth
+
+# Experiment outputs and large files
+runs/
+*.zip
+*.log
+weights/*
+!weights/cup_picking.pth
+
+# Secrets and local settings
+.env
+*.key
+*.pem
+credentials*.json
+wandb/
+.claude/
+CLAUDE.md
+
+# Python / notebooks
+__pycache__/
+*.pyc
+.ipynb_checkpoints/
+matplotlib_cache/
