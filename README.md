@@ -1,6 +1,6 @@
 # Multi-view RGB-D Cup Picking
 
-Find the cup a text request asks for ("blue leaf-pattern cup") in four RGB-D views and give a robot a point to grasp. A course team project. In simulation, it raised pick success from **51.8% to 88.5%** over the provided baseline.
+Find the cup a text request asks for ("blue leaf-pattern cup") in four RGB-D views and give a robot a point to grasp. A course team project. In simulation, it raised pick success from **51.8%** (provided baseline) to **88.5%** with the model in this repo, and to **89.6%** with an added CLIP pattern head (weights not included, see [Results](#results)).
 
 | Provided baseline: lifts a different green cup | This project: lifts the requested cup |
 |---|---|
@@ -32,6 +32,22 @@ flowchart LR
 
 Nothing in the pipeline uses labels at inference time. The only trained parts are two linear heads on frozen DINOv2 features and a heatmap network kept as a fallback, all trained on the training split. Handle detection uses geometry only.
 
+## How It Works
+
+| Step | What happens | Key settings | Trained? |
+|---|---|---|---|
+| 1. Cup candidates | Back-project every valid depth pixel of the 4 views into one world point cloud. Fit the table with RANSAC over near-horizontal planes and keep points 6 mm–20 cm above it. Group them by 26-connected 8 mm voxels. Each cluster gets a mask in every view | Plane tilt ≤ 15°, inlier 4 mm. Clusters kept if ≥ 200 points, ≤ 20 cm wide, ≥ 3 cm tall | No |
+| 2. Crops | Crop each candidate from each view where its mask has ≥ 150 px. Pixels outside the mask are grey so neighbouring cups do not leak in | Square box + 10% margin, resized to 224×224 | No |
+| 3. Features | Frozen DINOv2 ViT-S/14 turns each crop into a 768-d vector (CLS token + mean patch token). The model is re-implemented in the file, so inference needs no downloads | – | No (frozen) |
+| 4. Colour / pattern probabilities | **Linear head**: standardise the 768 features, apply one linear layer (W·x + b), then softmax. 6 colours: 6×768 weights + 6 biases. 5 patterns likewise. Colour accuracy on real candidate crops: 99.8% | Class-balanced cross-entropy, AdamW, training-split crops only | Heads only |
+| 5. Multi-view fusion | Colour: mean over views. Pattern: **max** over views for a patterned request (one view showing it is enough), **min** for "plain" (every view must agree) | – | No |
+| 6. Cup choice | Keep candidates with P(colour) ≥ 0.5, then take the single best P(colour)·P(pattern) | Top-1 only | No |
+| 7. Handle | RANSAC circle on the chosen cup's 3D points (z > 2 cm) gives body centre c and radius R. Mask pixels farther than R + 8 mm from c are the handle. Use SW if it shows ≥ 30 handle pixels, otherwise the view with most | Radius 2.5–7.5 cm, inlier 3 mm | No |
+| 8. Grasp point | Median of the outermost 10% of handle pixels, snapped to the nearest handle pixel with valid depth inside the robot workspace, then back-projected to 3D | – | No |
+| 9. Fallback | No handle found: the heatmap network, restricted to the cup mask. No candidate passes the colour filter (e.g. two touching cups merged): the heatmap network on all 4 views. On validation this ran 6 times out of 546, all successful | Baseline CNN architecture, retrained on 4 views | Yes |
+
+The robot side is provided by the course and was not changed. It turns the grasp point into a gripper pose (radial approach, 8 cm opening), executes it, and scores the result.
+
 ## Results
 
 Validation, 546 requests, simulated robot.
@@ -39,13 +55,17 @@ Validation, 546 requests, simulated robot.
 | Model | L1 | L2 | L3 | **All** |
 |---|---|---|---|---|
 | Provided baseline (SW view, small CNN heatmap) | 59.6% | 46.8% | 30.0% | **51.8%** (283) |
-| Final (this repo) | 91.4% | 86.1% | 82.0% | **88.5%** (483) |
+| This repo (DINOv2 selection + geometric handle grasp) | 91.4% | 86.1% | 82.0% | **88.5%** (483) |
+| + CLIP pattern head (weights not in this repo) | 92.1% | 86.1% | 90.0% | **89.6%** (489) |
+
+The CLIP pattern head is the same pipeline with one change. The pattern head reads frozen CLIP ViT-B/16 features (512-d) concatenated with the DINOv2 features (768-d). Compared request by request with the repo model, it fixed 6 requests and broke none (McNemar p = 0.031). This gain is small and borderline, and several of the 6 requests come from near-identical scenes. It is reported as a robustness improvement for unseen pattern designs, not as a clear accuracy gain. Its weights (434 MB, mostly the CLIP image encoder) are over GitHub's file limit, so they are not included.
 
 | Component | Measurement | Before → After |
 |---|---|---|
 | Multi-view score fusion | Cup-selection accuracy (offline, no robot) | 90.5% → 96.2% |
 | Geometric handle grasp | Grasp failures on the robot, same runtime | 83 → 50 (McNemar p < 1e-5) |
-| CLIP + DINOv2 features (*not in the final model*) | Balanced pattern accuracy on unseen pattern designs | 85.3% → 91.7% |
+| CLIP + DINOv2 pattern features | Balanced pattern accuracy on unseen pattern designs (offline) | 85.3% → 91.7% |
+| CLIP + DINOv2 pattern features | Robot success, same requests | 88.5% → 89.6% (6 fixed, 0 broken) |
 
 ## Experiment Log
 
@@ -65,8 +85,9 @@ In order. Robot success rate on the 546 validation requests unless noted. Dead e
 | 9 | Diagnostic: find the handle from depth geometry (no robot) | Grasp point on the handle 85% → 99% | |
 | 10 | Keep the chosen cup when its grasp point is invalid (instead of the 2nd-ranked cup) | 83.0% | **No measurable effect** |
 | 11 | Grasp the outer end of the geometrically detected handle | **88.5%**. Grasp failures 83 → 50, p < 1e-5 | Remaining failures: 15 wrong cup, 48 handle grasps that fail even at the reference point |
-| 12 | CLIP for unseen pattern designs (offline) | CLIP zero-shot **worse** (82.1%). CLIP + linear alone **no gain**. CLIP + DINOv2 85.3% → 91.7% | |
-| 13 | CLIP + DINOv2 head on real candidates (offline) | Selection 96.2% → 97.3% (6 fixed, 0 broken) | About +1 point expected. The robot evaluation of (11)+(13) is still pending, and the CLIP weights (434 MB) are not in this repo |
+| 12 | CLIP for unseen pattern designs (offline) | CLIP zero-shot **worse** (82.1%). CLIP + linear alone **no gain**. CLIP + DINOv2 85.3% → 91.7% | Of the 15 remaining wrong-cup failures in (11), 6 were pattern misreads |
+| 13 | CLIP + DINOv2 head on real candidates (offline) | Selection 96.2% → 97.3% (6 fixed, 0 broken) | About +1 point expected on the robot |
+| 14 | (11) + (13) on the robot | **89.6%**. 6 fixed, 0 broken (p = 0.031), matching the offline prediction | Remaining: 48 failed handle grasps, most of which also fail at the labelled reference point (grasp pose / cup shape). 9 wrong-cup lifts, mostly cases where the target cup merged with a neighbour and is missing from the candidates |
 
 ## Failure Analysis: body grasps instead of handle grasps
 
