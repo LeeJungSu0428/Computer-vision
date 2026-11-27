@@ -69,30 +69,27 @@ The CLIP pattern head is the same pipeline with one change. The pattern head rea
 
 ## Experiment Log
 
-In order. Robot success rate on the 546 validation requests unless noted. Dead ends are included.
+Key steps in order. Robot success rate on the 546 validation requests unless noted.
 
-| # | Change | Result | Why the next step |
+| # | Change | Result | What it showed → next step |
 |---|---|---|---|
-| 0 | Provided baseline: SW view only, 6-layer CNN heatmap | 51.8% | 73% of failures pointed at a **different cup**. Finding the right cup comes first |
-| 1 | Retrain the baseline CNN on all 4 views and pick the most "observable" view | 59.2%. Gain on L1 only | View choice did not work: the score gap between views averaged 0.03. All 139 wrong-cup lifts were *same colour, different pattern* |
-| 2 | Add a view one-hot to the input | **Stopped before running** | It addresses neither pattern recognition nor view selection |
-| 3 | Diagnostic: frozen DINOv2 + linear head on ground-truth cup crops (oracle) | Picks the right cup 98.7% vs 51.3% for (1) on L2 | Patterns are separable with good features. The bottleneck is the model, not the data |
-| 4 | Label-free 3D candidates from depth + DINOv2 selection | L2: 48.1% → 76.9% | Candidate segmentation loses almost nothing vs ground-truth crops |
-| 5 | Colour filter before ranking | Selection 88.3% → 90.5% | Without it, a different-colour cup showing the pattern could win |
-| 6 | Integrate (4)+(5) as a submission | 77.8% | Remaining wrong-cup cases: 33 of 42 had the pattern hidden from the SW view |
-| 7 | Fuse scores over the 4 views (max for patterns, min for "plain") | Selection 90.5% → 96.2%. Robot 82.2% | Largest remaining failure: picking the right cup but failing the grasp |
-| 8 | Diagnostic: grasp exactly at the labelled reference point (oracle) | 93.3% vs 82.8% on the same 478 requests | Better grasp points alone could gain ~10 points. Earlier analysis: handle grasps 92% vs body grasps 46% success |
-| 9 | Diagnostic: find the handle from depth geometry (no robot) | Grasp point on the handle 85% → 99% | |
-| 10 | Keep the chosen cup when its grasp point is invalid (instead of the 2nd-ranked cup) | 83.0% | **No measurable effect** |
-| 11 | Grasp the outer end of the geometrically detected handle | **88.5%**. Grasp failures 83 → 50, p < 1e-5 | Remaining failures: 15 wrong cup, 48 handle grasps that fail even at the reference point |
-| 12 | CLIP for unseen pattern designs (offline) | CLIP zero-shot **worse** (82.1%). CLIP + linear alone **no gain**. CLIP + DINOv2 85.3% → 91.7% | Of the 15 remaining wrong-cup failures in (11), 6 were pattern misreads |
-| 13 | CLIP + DINOv2 head on real candidates (offline) | Selection 96.2% → 97.3% (6 fixed, 0 broken) | About +1 point expected on the robot |
-| 14 | (11) + (13) on the robot | **89.6%**. 6 fixed, 0 broken (p = 0.031), matching the offline prediction | Remaining: 48 failed handle grasps, most of which also fail at the labelled reference point (grasp pose / cup shape). 9 wrong-cup lifts, mostly cases where the target cup merged with a neighbour and is missing from the candidates |
+| 1 | Provided baseline: SW view only, small CNN heatmap | 51.8% | 73% of failures pointed at a **different cup**. Finding the right cup comes first |
+| 2 | Retrain the CNN on all 4 views and pick the most "observable" view | 59.2%, gain on L1 only | **View selection did not work** (score gap between views 0.03 on average). All 139 wrong-cup lifts were *same colour, different pattern*, so the real problem is pattern recognition |
+| 3 | Diagnostic (oracle): frozen DINOv2 + linear head on ground-truth cup crops | Right cup 98.7% vs 51.3% for (2), L2 | Patterns are separable with good pretrained features. The bottleneck was the model, not the data |
+| 4 | Label-free 3D cup candidates from depth + DINOv2 colour/pattern heads + colour filter | 77.8% | 33 of the remaining 42 wrong-cup cases had the pattern hidden from the SW view |
+| 5 | Fuse scores over all 4 views (max for patterns, min for "plain") | 82.2% (cup selection 90.5% → 96.2%) | Most remaining failures: right cup, failed grasp. Handle grasps succeeded 92% vs body grasps 46%, and grasping at the labelled reference point (oracle) reached 93.3% vs 82.8% |
+| 6 | Grasp the outer end of a handle found by depth geometry (no training) | **88.5%**, grasp failures 83 → 50 (p < 1e-5) | Of 15 remaining wrong-cup cases, 6 were pattern misreads on unseen designs |
+| 7 | Pattern head on CLIP + DINOv2 features | **89.6%**, 6 fixed / 0 broken (p = 0.031). Offline: unseen-design accuracy 85.3% → 91.7% | Remaining failures are mostly the grasp pose and cup shape (48), plus cups merged in the candidates. Neither is a perception problem |
+
+Tried without a measurable effect:
+- A view one-hot input (stopped before running, since it addressed neither problem above)
+- Keeping the chosen cup when its grasp point was invalid (83.0%)
+- CLIP zero-shot (worse than DINOv2) and CLIP features alone (no gain)
 
 ## Failure Analysis: body grasps instead of handle grasps
 
-1. **Finding the failure.** After cup selection was fixed (step 7), most remaining failures were *right cup, failed grasp*. Splitting the robot outcomes by the part of the cup that was grasped (diagnosis only, using part labels) gave clear numbers. Handle grasps succeeded 92.1% of the time and body grasps 45.7%. The provided grasp policy approaches radially with an 8 cm opening, which suits a handle.
-2. **Checking the ceiling first.** Before changing anything, the robot was scored on the labelled handle reference point (step 8): 93.3% vs 82.8%. This showed that a better grasp point would pay off.
+1. **Finding the failure.** After cup selection was fixed (step 5), most remaining failures were *right cup, failed grasp*. Splitting the robot outcomes by the part of the cup that was grasped (diagnosis only, using part labels) gave clear numbers. Handle grasps succeeded 92.1% of the time and body grasps 45.7%. The provided grasp policy approaches radially with an 8 cm opening, which suits a handle.
+2. **Checking the ceiling first.** Before changing anything, the robot was scored on the labelled handle reference point: 93.3% vs 82.8%. This showed that a better grasp point would pay off.
 3. **Fix without training.** A cup body is a cylinder. A RANSAC circle fitted to the cup's 3D points from all four views gives the body axis and radius. Mask pixels more than 8 mm outside the circle are the handle. The 8 mm margin is the smallest margin with 100% handle precision on the training split. The grasp pixel is the median of the outermost 10% of handle pixels.
 4. **Result.** Grasp failures fell from 83 to 50 in the same runtime. Only 8 requests got worse (38 fixed vs 8 broken, McNemar p ≈ 9e-6).
 5. **What is left.** In 48 of the remaining 50 grasp failures the grasp pixel is already on the handle, a median of 4.5 px from the reference point. The oracle reference grasp also fails on 34 of them. So these are limits of the grasp pose and the cup shape, not of perception. One cup shape accounts for 28 of them.
